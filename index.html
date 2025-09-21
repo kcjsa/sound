@@ -36,17 +36,20 @@ document.getElementById('startBroadcast').onclick = async () => {
 
   await fetch(`${WORKER_URL}&action=start&uid=${uid}&title=${encodeURIComponent(title)}`);
 
-  // WebRTC 配信
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
     pc = new RTCPeerConnection();
     stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-    // ICE candidate イベントは将来的にシグナリングに追加可能
-    pc.onicecandidate = e => { if(e.candidate) console.log("ICE candidate ready"); };
+    pc.onicecandidate = async e => {
+      if(e.candidate){
+        await fetch(`${WORKER_URL}&action=signal&uid=${uid}&data=${encodeURIComponent(JSON.stringify({candidate:e.candidate}))}`);
+      }
+    };
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
+    await fetch(`${WORKER_URL}&action=signal&uid=${uid}&data=${encodeURIComponent(JSON.stringify(offer))}`);
 
     document.getElementById('startBroadcast').disabled = true;
     document.getElementById('stopBroadcast').disabled = false;
@@ -82,35 +85,49 @@ async function fetchPrograms() {
     }
   } catch(e){ console.error(e) }
 }
-
-// 定期的に更新
 setInterval(fetchPrograms, 3000);
 fetchPrograms();
 
-// リスナー側 WebRTC 聴取
+// リスナー側 WebRTC 聴取（ICE candidate 交換対応）
 async function listenTo(hostUid){
   const pc = new RTCPeerConnection();
-
-  // 音声を再生
   const audio = document.getElementById('audio');
   pc.ontrack = e => { audio.srcObject = e.streams[0]; }
 
-  // シグナリング: Offer 作成
+  pc.onicecandidate = async e => {
+    if(e.candidate){
+      await fetch(`${WORKER_URL}&action=signal&uid=${hostUid}&data=${encodeURIComponent(JSON.stringify({candidate:e.candidate}))}`);
+    }
+  };
+
+  // Offer 作成
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
 
-  // Offer を Worker 経由で配信者に保存
+  // Worker に送信
   await fetch(`${WORKER_URL}&action=signal&uid=${hostUid}&data=${encodeURIComponent(JSON.stringify(offer))}`);
 
-  // Answer が Worker に出現するまでポーリング
+  // Answer をポーリング
   let answer = null;
+  let knownCandidates = [];
   while(!answer){
     const resp = await fetch(`${WORKER_URL}&action=getSignal&uid=${hostUid}`);
-    answer = await resp.json();
+    const data = await resp.json();
+    if(data.sdp && data.sdp.type === 'answer') answer = data.sdp;
+
+    // ICE candidate も追加
+    if(data.candidates){
+      for(const c of data.candidates){
+        if(!knownCandidates.includes(c.candidate)){
+          knownCandidates.push(c.candidate);
+          pc.addIceCandidate(c);
+        }
+      }
+    }
     await new Promise(r=>setTimeout(r,1000));
   }
-
   await pc.setRemoteDescription(answer);
+
   alert(`"${programsDiv.querySelector(`.program button[onclick*='${hostUid}']`).parentNode.firstChild.textContent}" を聴取中`);
 }
 </script>
