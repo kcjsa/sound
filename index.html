@@ -15,16 +15,18 @@ audio { margin-top:10px; width:90%; max-width:500px }
 </head>
 <body>
 <h1>匿名P2Pラジオ</h1>
+
 <div>
   <button id="startBroadcast">匿名で配信開始</button>
   <button id="stopBroadcast" disabled>配信終了</button>
 </div>
+
 <div id="programs"></div>
 <audio id="audio" controls autoplay></audio>
 
 <script>
 const WORKER_URL = 'https://sound.kcjsakcjsa.workers.dev/?token=公開用トークン';
-let uid = crypto.randomUUID(); // 匿名ID
+let uid = crypto.randomUUID(); // 配信者用匿名ID
 let pc;
 
 // 配信開始
@@ -34,18 +36,24 @@ document.getElementById('startBroadcast').onclick = async () => {
 
   await fetch(`${WORKER_URL}&action=start&uid=${uid}&title=${encodeURIComponent(title)}`);
 
-  const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
-  pc = new RTCPeerConnection();
-  stream.getTracks().forEach(track => pc.addTrack(track, stream));
+  // WebRTC 配信
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+    pc = new RTCPeerConnection();
+    stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-  pc.onicecandidate = e => { if(e.candidate) console.log("ICE candidate ready"); };
+    // ICE candidate イベントは将来的にシグナリングに追加可能
+    pc.onicecandidate = e => { if(e.candidate) console.log("ICE candidate ready"); };
 
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
 
-  document.getElementById('startBroadcast').disabled = true;
-  document.getElementById('stopBroadcast').disabled = false;
-  alert("配信中です。番組ID: "+uid);
+    document.getElementById('startBroadcast').disabled = true;
+    document.getElementById('stopBroadcast').disabled = false;
+    alert("配信中です。番組ID: "+uid);
+  } catch(err){
+    alert("マイクの使用が許可されませんでした: " + err.message);
+  }
 };
 
 // 配信終了
@@ -57,23 +65,54 @@ document.getElementById('stopBroadcast').onclick = async () => {
   alert("配信終了しました");
 };
 
-// 番組リスト取得
+// 番組リスト取得と「聞く」ボタン生成
 const programsDiv = document.getElementById('programs');
 async function fetchPrograms() {
-  try{
+  try {
     const resp = await fetch(`${WORKER_URL}&action=list`);
     const programs = await resp.json();
     programsDiv.innerHTML = '';
+
     for(const hostUid in programs){
       const div = document.createElement('div');
       div.className = 'program';
       div.innerHTML = `<span>${programs[hostUid].title}</span> <button>聞く</button>`;
-      div.querySelector('button').onclick = () => alert("聴取はWebRTC経由で後実装");
+      div.querySelector('button').onclick = () => listenTo(hostUid);
       programsDiv.appendChild(div);
     }
-  }catch(e){ console.error(e) }
+  } catch(e){ console.error(e) }
 }
+
+// 定期的に更新
 setInterval(fetchPrograms, 3000);
+fetchPrograms();
+
+// リスナー側 WebRTC 聴取
+async function listenTo(hostUid){
+  const pc = new RTCPeerConnection();
+
+  // 音声を再生
+  const audio = document.getElementById('audio');
+  pc.ontrack = e => { audio.srcObject = e.streams[0]; }
+
+  // シグナリング: Offer 作成
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  // Offer を Worker 経由で配信者に保存
+  await fetch(`${WORKER_URL}&action=signal&uid=${hostUid}&data=${encodeURIComponent(JSON.stringify(offer))}`);
+
+  // Answer が Worker に出現するまでポーリング
+  let answer = null;
+  while(!answer){
+    const resp = await fetch(`${WORKER_URL}&action=getSignal&uid=${hostUid}`);
+    answer = await resp.json();
+    await new Promise(r=>setTimeout(r,1000));
+  }
+
+  await pc.setRemoteDescription(answer);
+  alert(`"${programsDiv.querySelector(`.program button[onclick*='${hostUid}']`).parentNode.firstChild.textContent}" を聴取中`);
+}
 </script>
 </body>
 </html>
