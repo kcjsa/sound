@@ -22,53 +22,26 @@ audio { margin-top:10px; width:90%; max-width:500px }
 <div id="programs"></div>
 <audio id="audio" controls autoplay></audio>
 
-<script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-app.js";
-import { getDatabase, ref, set, update, remove, get } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-database.js";
-import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-auth.js";
-
-// Firebase 初期化
-const firebaseConfig = {
-  apiKey: "AIzaSyBXI9QxPMsQYwz_HH5FLXWPFtu5phVwSy8",
-  authDomain: "sound-e09cf.firebaseapp.com",
-  databaseURL: "https://sound-e09cf-default-rtdb.firebaseio.com",
-  projectId: "sound-e09cf",
-  storageBucket: "sound-e09cf.firebasestorage.app",
-  messagingSenderId: "869911555019",
-  appId: "1:869911555019:web:c134b8aa7fee41d8ada44e",
-  measurementId: "G-DZP3PY6YQX"
-};
-
-const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
-const auth = getAuth(app);
-
-let uid = '';
-signInAnonymously(auth).then(userCredential => {
-  uid = userCredential.user.uid;
-}).catch(console.error);
-
-let pc, programRef;
+<script>
+const WORKER_URL = 'https://sound.kcjsakcjsa.workers.dev/?token=公開用トークン';
+let uid = crypto.randomUUID(); // 匿名ID
+let pc;
 
 // 配信開始
 document.getElementById('startBroadcast').onclick = async () => {
   const title = prompt("番組タイトルを入力");
   if(!title) return;
 
+  await fetch(`${WORKER_URL}&action=start&uid=${uid}&title=${encodeURIComponent(title)}`);
+
   const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
   pc = new RTCPeerConnection();
   stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-  programRef = ref(db, 'programs/' + uid);
-  await set(programRef, { hostUid: uid, title, offer:"", iceCandidates:{} });
-
-  pc.onicecandidate = e => {
-    if(e.candidate) update(ref(db, 'programs/' + uid + '/iceCandidates'), { candidate:e.candidate.toJSON() });
-  };
+  pc.onicecandidate = e => { if(e.candidate) console.log("ICE candidate ready"); };
 
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
-  await update(programRef, { offer: offer.sdp });
 
   document.getElementById('startBroadcast').disabled = true;
   document.getElementById('stopBroadcast').disabled = false;
@@ -78,42 +51,29 @@ document.getElementById('startBroadcast').onclick = async () => {
 // 配信終了
 document.getElementById('stopBroadcast').onclick = async () => {
   if(pc) pc.close();
-  if(programRef) await remove(programRef);
+  await fetch(`${WORKER_URL}&action=stop&uid=${uid}`);
   document.getElementById('startBroadcast').disabled = false;
   document.getElementById('stopBroadcast').disabled = true;
   alert("配信終了しました");
 };
 
-// 番組リスト取得（Cloudflare Worker 経由）
+// 番組リスト取得
 const programsDiv = document.getElementById('programs');
 async function fetchPrograms() {
   try{
-    const resp = await fetch('https://your-worker.workers.dev?token=公開用トークン');
+    const resp = await fetch(`${WORKER_URL}&action=list`);
     const programs = await resp.json();
     programsDiv.innerHTML = '';
     for(const hostUid in programs){
       const div = document.createElement('div');
       div.className = 'program';
       div.innerHTML = `<span>${programs[hostUid].title}</span> <button>聞く</button>`;
-      div.querySelector('button').onclick = () => listenProgram(hostUid);
+      div.querySelector('button').onclick = () => alert("聴取はWebRTC経由で後実装");
       programsDiv.appendChild(div);
     }
   }catch(e){ console.error(e) }
 }
 setInterval(fetchPrograms, 3000);
-
-// 聴取
-async function listenProgram(hostUid){
-  const pc = new RTCPeerConnection();
-  pc.ontrack = e => { document.getElementById('audio').srcObject = e.streams[0]; };
-
-  const offerSdp = await (await get(ref(db, 'programs/' + hostUid + '/offer'))).val();
-  await pc.setRemoteDescription({ type:'offer', sdp:offerSdp });
-
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-  await set(ref(db, 'programs/' + hostUid + '/answer'), { sdp: answer.sdp });
-}
 </script>
 </body>
 </html>
