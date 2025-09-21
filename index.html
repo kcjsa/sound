@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>匿名P2Pラジオ</title>
+<style>
+body { font-family:sans-serif; display:flex; flex-direction:column; align-items:center; margin:0; }
+h1 { margin:10px; }
+button { padding:10px 20px; margin:5px; font-size:16px }
+#programs { width:90%; max-width:500px; margin-top:10px }
+.program { display:flex; justify-content:space-between; margin:5px 0 }
+audio { margin-top:10px; width:90%; max-width:500px }
+</style>
+</head>
+<body>
+<h1>匿名P2Pラジオ</h1>
+<div>
+  <button id="startBroadcast">匿名で配信開始</button>
+  <button id="stopBroadcast" disabled>配信終了</button>
+</div>
+<div id="programs"></div>
+<audio id="audio" controls autoplay></audio>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-app.js";
+import { getDatabase, ref, set, update, remove, get } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-database.js";
+import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-auth.js";
+
+// Firebase 初期化
+const firebaseConfig = {
+  apiKey: "AIzaSyBXI9QxPMsQYwz_HH5FLXWPFtu5phVwSy8",
+  authDomain: "sound-e09cf.firebaseapp.com",
+  databaseURL: "https://sound-e09cf-default-rtdb.firebaseio.com",
+  projectId: "sound-e09cf",
+  storageBucket: "sound-e09cf.firebasestorage.app",
+  messagingSenderId: "869911555019",
+  appId: "1:869911555019:web:c134b8aa7fee41d8ada44e",
+  measurementId: "G-DZP3PY6YQX"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+const auth = getAuth(app);
+
+let uid = '';
+signInAnonymously(auth).then(userCredential => {
+  uid = userCredential.user.uid;
+}).catch(console.error);
+
+let pc, programRef;
+
+// 配信開始
+document.getElementById('startBroadcast').onclick = async () => {
+  const title = prompt("番組タイトルを入力");
+  if(!title) return;
+
+  const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+  pc = new RTCPeerConnection();
+  stream.getTracks().forEach(track => pc.addTrack(track, stream));
+
+  programRef = ref(db, 'programs/' + uid);
+  await set(programRef, { hostUid: uid, title, offer:"", iceCandidates:{} });
+
+  pc.onicecandidate = e => {
+    if(e.candidate) update(ref(db, 'programs/' + uid + '/iceCandidates'), { candidate:e.candidate.toJSON() });
+  };
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  await update(programRef, { offer: offer.sdp });
+
+  document.getElementById('startBroadcast').disabled = true;
+  document.getElementById('stopBroadcast').disabled = false;
+  alert("配信中です。番組ID: "+uid);
+};
+
+// 配信終了
+document.getElementById('stopBroadcast').onclick = async () => {
+  if(pc) pc.close();
+  if(programRef) await remove(programRef);
+  document.getElementById('startBroadcast').disabled = false;
+  document.getElementById('stopBroadcast').disabled = true;
+  alert("配信終了しました");
+};
+
+// 番組リスト取得（Cloudflare Worker 経由）
+const programsDiv = document.getElementById('programs');
+async function fetchPrograms() {
+  try{
+    const resp = await fetch('https://your-worker.workers.dev?token=公開用トークン');
+    const programs = await resp.json();
+    programsDiv.innerHTML = '';
+    for(const hostUid in programs){
+      const div = document.createElement('div');
+      div.className = 'program';
+      div.innerHTML = `<span>${programs[hostUid].title}</span> <button>聞く</button>`;
+      div.querySelector('button').onclick = () => listenProgram(hostUid);
+      programsDiv.appendChild(div);
+    }
+  }catch(e){ console.error(e) }
+}
+setInterval(fetchPrograms, 3000);
+
+// 聴取
+async function listenProgram(hostUid){
+  const pc = new RTCPeerConnection();
+  pc.ontrack = e => { document.getElementById('audio').srcObject = e.streams[0]; };
+
+  const offerSdp = await (await get(ref(db, 'programs/' + hostUid + '/offer'))).val();
+  await pc.setRemoteDescription({ type:'offer', sdp:offerSdp });
+
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  await set(ref(db, 'programs/' + hostUid + '/answer'), { sdp: answer.sdp });
+}
+</script>
+</body>
+</html>
